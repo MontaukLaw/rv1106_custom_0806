@@ -1,0 +1,6 @@
+make --dry-run --always-make --keep-going --print-directory
+make: Entering directory '/home/marc/rv1106/rv1106_sdk_custom_0806'
+make: Leaving directory '/home/marc/rv1106/rv1106_sdk_custom_0806'
+ 
+make: *** No targets specified and no makefile found.  Stop.
+

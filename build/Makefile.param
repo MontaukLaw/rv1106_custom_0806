@@ -1,0 +1,35 @@
+work_dir=../
+commLib_inc=$(work_dir)/include
+commLib_libs= $(work_dir)/libs
+commLib_extra_inc=$(commLib_inc)/ext
+APPDIR=$(work_dir)
+sdk=rv1106
+
+ifeq ($(sdk),rv1106)
+CROSS_COMPILE ?= /home/marc/rv1106/toolchain/env/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf
+SYSROOT ?= /home/marc/rv1106/toolchain/env/arm-rockchip830-linux-uclibcgnueabihf/arm-rockchip830-linux-uclibcgnueabihf/sysroot/
+CFLAGS := --sysroot=$(SYSROOT)
+LDFLAGS := --sysroot=$(SYSROOT)
+CFLAGS += -fno-aggressive-loop-optimizations -ffunction-sections -fdata-sections -fstack-protector 
+# for debug
+CFLAGS += -g -O2 -Wall -DLINUX -DUSING_HIP_OS_CONFIG -D_GNU_SOURCE -fPIC -DISP_HW_V20
+# for release
+#CFLAGS += -O2 -Wall -DLINUX -DUSING_HIP_OS_CONFIG -D_GNU_SOURCE -fPIC -DISP_HW_V20
+CFLAGS += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -DUSE_UPDATEENGINE=ON -DSUCCESSFUL_BOOT=ON  -DNDEBUG  -rdynamic
+
+CXXFLAGS := --sysroot=$(SYSROOT)
+CXXFLAGS += -fno-aggressive-loop-optimizations -ffunction-sections -fdata-sections -fstack-protector
+CXXFLAGS += -Wall -O2 -DLINUX -DUSING_HIP_OS_CONFIG -D_GNU_SOURCE -fPIC -DISP_HW_V20
+CXXFLAGS += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -DUSE_UPDATEENGINE=ON -DSUCCESSFUL_BOOT=ON  -DNDEBUG  -rdynamic
+endif
+
+#CC = @echo '	CC $@';$(CROSS_COMPILE)gcc
+CC = $(CROSS_COMPILE)-gcc
+CXX = $(CROSS_COMPILE)-g++
+AR = $(CROSS_COMPILE)-ar
+LD = $(CROSS_COMPILE)-ld
+RANLIB = $(CROSS_COMPILE)-ranlib
+STRIP = $(CROSS_COMPILE)-strip
+ARFLAGS = rc
+RM = rm -rfv
+CP = cp -rfv

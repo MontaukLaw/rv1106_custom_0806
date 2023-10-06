@@ -1,0 +1,327 @@
+#include "common.h"
+
+#include "comm_type.h"
+#include "comm_codec.h"
+#include <rga/rga.h>
+#include <rga/im2d.h>
+
+#include "codec2_process.h"
+#include "osd_if.h"
+#include "RgaProc.h"
+
+#include "snapshot.h"
+#include <rk_mpi_mb.h>
+#include "rkai_demo.h"
+
+#include "yolo_detect.h"
+#include "tde.h"
+
+RgaProc *rga_hd[2];
+
+static unsigned char *rgb_buff[MAX_STREAM_NUM];
+static CROP_RECT crop[] = {
+	{0, 0, 1920, 1080},
+	{100, 100, 640, 640},
+	{100, 100, 640, 640},
+	{100, 100, 640, 640}};
+
+// static CROP_RECT crop[] = {
+// 	{100, 100, 640, 480},
+// 	{100, 100, 640, 480},
+// 	{100, 100, 640, 480},
+// 	{100, 100, 640, 480}};
+
+extern "C" int yuv_data_coming(int stream_index, void *mb);
+
+static nn_object_array_t ai_result;
+
+static void *ss_hd; // 截图句柄
+
+// #define YUV_TO_RGB
+// #define RGB_SAVE_TO_FILE
+// #define JPEG_OSD_TEST
+#define TEST_AI_RESULT
+// #define RK_IVA_ENABLE
+// #define RKNN_LETTERL_BOX
+#define RK_RKNN_YOLO_ENABLE
+
+extern "C" void notify_ROI_changed(int channel_no)
+{
+}
+
+extern "C" int comm_ai_process(int stream_index, void *mb, void *puser)
+{
+	static int count = 0;
+
+	if (stream_index == CAM0_STREAM_MAIN)
+	{
+		RgaProc *hd;
+		unsigned char *buff = NULL;
+		bool ret = false;
+
+		// 1. 格式转换, yuv -> crop & rgb
+#ifdef YUV_TO_RGB
+		// os_dbg("CAM%d_STREAM process...", stream_index);
+		hd = rga_hd[app_get_camid(stream_index)];
+		if (hd == NULL)
+		{
+			int w, h;
+			app_get_resolution(stream_index, &w, &h, NULL);
+			rga_hd[app_get_camid(stream_index)] = new RgaProc(w, h, RK_FMT_YUV420SP);
+			hd = rga_hd[app_get_camid(stream_index)];
+		}
+		if (rgb_buff[CAM0_STREAM_MAIN] == NULL)
+		{
+			int w, h;
+			app_get_resolution(stream_index, &w, &h, NULL);
+			rgb_buff[CAM0_STREAM_MAIN] = (unsigned char *)malloc(w * h * 3);
+		}
+		buff = rgb_buff[CAM0_STREAM_MAIN];
+		if (hd && buff)
+		{
+			ret = hd->rga_proc_covert_rgb((VIDEO_FRAME_INFO_S *)mb, &crop[stream_index], &buff, true);
+			if (ret == false)
+				os_dbg("rga convert fail!!!");
+		}
+#endif
+
+#ifdef RKNN_LETTERL_BOX
+
+#endif
+
+#ifdef RGB_SAVE_TO_FILE
+		// os_dbg("rga_proc_covert_rgb return = %d", ret);
+		if (ret)
+		{
+			// if ((count % 10) == 0)
+			if (count == 10)
+			{
+				char fn[80];
+				sprintf(fn, "/data/media/%d.rgb", count);
+				FILE *fp = fopen(fn, "wb");
+				if (fp && buff)
+				{
+					// int w, h;
+					// app_get_resolution(stream_index, &w, &h, NULL);
+					fwrite(buff, 1, w * h * 3, fp);
+					fclose(fp);
+				}
+			}
+		}
+#endif
+
+#ifdef JPEG_OSD_TEST
+		if (ss_hd == NULL)
+			ss_hd = app_capture_get_handle(CAM0_STREAM_MAIN);
+		if (ss_hd && ((count % 20) == 0))
+		{
+			char fn[70];
+			char osd_str[50];
+			Osd_If *osd_hd = (Osd_If *)snapshot_get_osd_hd(ss_hd);
+			osd_hd->set_font_bg_color(FONT_BG_COLOR_1);
+			sprintf(osd_str, "snap test %d....", count);
+			if (osd_hd)
+				osd_hd->SetOsdTip(0, 300, 300, osd_str, 0xff0000, 50, true);
+
+			os_dbg("+++++++++++++++++++++++++++++");
+
+			sprintf(fn, "/data/media/ss_%d.jpg", count);
+			snapshot_run_once(ss_hd, (unsigned char *)RK_MPI_MB_Handle2VirAddr(((VIDEO_FRAME_INFO_S *)mb)->stVFrame.pMbBlk), fn);
+			os_dbg("-----------------------------");
+		}
+#endif
+
+		// 2. 这里开始AI处理,
+#ifdef RK_IVA_ENABLE
+		rmm_process_rgb(buff, crop[stream_index].w, crop[stream_index].h);
+#endif
+
+#ifdef RK_RKNN_YOLO_ENABLE
+
+		if (counter % 5 != 1)
+		{
+			return OS_SUCCESS;
+		}
+		int w, h;
+		MB_BLK dstBlk = RK_NULL;
+		app_get_resolution(stream_index, &w, &h, NULL);
+		printf("stream_index: %d w = %d, h = %d\n", stream_index, w, h);
+		trans_1920x1080_yuv_to_640x640_rgb((VIDEO_FRAME_INFO_S *)mb, &dstBlk);
+		// printf("creating data\n");
+		if (count == 10)
+		{
+			// 写成一个文件
+			FILE *fp = fopen("/userdata/nfs/640x640.rgb", "wb");
+			if (fp)
+			{
+				fwrite(RK_MPI_MB_Handle2VirAddr(dstBlk), 1, MODLE_WIDTH * MODLE_WIDTH * 3, fp);
+				fclose(fp);
+			}
+		}
+
+		// detect_result_group_t detect_result_group;
+		// memset(&detect_result_group, 0, sizeof(detect_result_group_t));
+		// ai_result
+		rknn_detect((unsigned char *)(RK_MPI_MB_Handle2VirAddr(dstBlk)), &ai_result);
+		// rknn_detect((unsigned char *)(RK_MPI_MB_Handle2VirAddr(dstBlk)), &detect_result_group);
+
+		RK_MPI_SYS_MmzFree(dstBlk);
+
+#endif
+
+		// 3. 后处理，比如根据结果，画osd 等。
+#ifdef TEST_AI_RESULT
+		int line_pixel = 4;
+		int k;
+		// ai_result.count = 8;
+		// ai_result.object[0].box.left = 100;
+		// ai_result.object[0].box.right = 180;
+		// ai_result.object[0].box.top = 100;
+		// ai_result.object[0].box.bottom = 180;
+		// ai_result.object[0].color = 0xffff00;
+		// ai_result.object[0].id = 1;
+
+		for (k = 0; k < ai_result.count; k++)
+		{
+			int x, y, right, bottom;
+			nn_object_t *detect_object = &ai_result.object[k];
+			x = detect_object->box.left * RKNN_VI_WIDTH / MID_TERM_WIDTH;
+			y = (detect_object->box.top - DETECT_X_START) * RKNN_VI_HEIGHT / MID_TERM_HEIGHT;
+
+			right = detect_object->box.right * RKNN_VI_WIDTH / MID_TERM_WIDTH;
+			bottom = (detect_object->box.bottom - DETECT_X_START) * RKNN_VI_HEIGHT / MID_TERM_HEIGHT;
+
+			x = x / 16 * 16;
+			y = y / 16 * 16;
+			right = (right + 3) / 16 * 16;
+			bottom = (bottom + 3) / 16 * 16;
+
+			while (right + line_pixel >= RKNN_VI_WIDTH)
+			{
+				right -= 8;
+			}
+			while (bottom + line_pixel >= RKNN_VI_HEIGHT)
+			{
+				bottom -= 8;
+			}
+			if (x < 0 || y < 0 || bottom < 0 || bottom < 0)
+			{
+				continue;
+			}
+
+			// 	ai_result.object[i].box.left = ai_result.object[i - 1].box.left + 85;
+			// 	ai_result.object[i].box.right = ai_result.object[i - 1].box.right + 85;
+			// 	ai_result.object[i].box.top = 100;
+			// 	ai_result.object[i].box.bottom = 180;
+			// 	ai_result.object[i].id = 1000 + 1;
+			// 	if (i < 4)
+			// 		ai_result.object[i].color = 0xff0000;
+			// 	else if (i < 6)
+			// 		ai_result.object[i].color = 0x00ff00;
+			// 	else if (i < 8)
+			detect_object->color = 0x0000ff;
+			detect_object->box.left = x;
+			detect_object->box.right = right;
+			detect_object->box.top = y;
+			detect_object->box.bottom = bottom;
+		}
+
+		// AI 分辨率可能与 stream main/sub 分辨率不同，需要转换坐标。
+		int target_stream = app_get_main_index_from_ai(stream_index);
+		app_covert_nn_coordinate(stream_index, target_stream, &ai_result);
+
+		ret = app_set_nn_obj(target_stream, &ai_result); // 表示 rtsp 的主流
+														 // os_dbg("app_set_nn_obj ret = %d", ret);
+
+#if 0
+			// 测试YUV画线
+			avcodec_osd_line_t oline;
+			memset(&oline, 0, sizeof(oline));
+			oline.index = 3;
+			oline.enable = 1;
+			oline.x = 12;
+			oline.y = 12;
+			oline.x2 = 1910;
+			oline.y2 = 1070;
+			oline.thick = 2;
+			oline.color = 0xff0000;
+			ret = app_set_stream_sw_osd_line(CAM0_STREAM_MAIN, &oline);
+			// os_dbg("0ret = %d", ret);
+
+			oline.index = 4;
+			oline.enable = 1;
+			oline.line_type = 2; // 1. left arrow; 2, right arrow
+			oline.x = 20;
+			oline.y = 520;
+			oline.x2 = 1020;
+			oline.y2 = 20;
+			oline.thick = 2;
+			oline.color = 0xff;
+			ret = app_set_stream_sw_osd_line(CAM0_STREAM_MAIN, &oline);
+			os_dbg("ret = %d", ret);
+
+			// 画框
+			avcodec_osd_rect_t rect;
+			rect.index = 5;
+			rect.enable = 1;
+			rect.x = 300;
+			rect.y = 300;
+			rect.w = 300;
+			rect.h = 300;
+			rect.thick = 2;
+			rect.color = 0x00ffff;
+			app_set_stream_sw_osd_rect(CAM0_STREAM_MAIN, &rect);
+
+			// draw bitmap
+			avcodec_osd_bitmap_t bm;
+			int w = 56, h = 50;
+			unsigned char buff[w * h / 8];
+			memset(buff, 0, w * h / 8); // 0 --- 透明; 1 ---- 画点，color = bmp.color
+			memset(buff, 0xff, w / 8);
+			memset(buff + (w - 1) * h / 8, 0xff, w / 8);
+
+			bm.enable = 1;
+			bm.index = 9;
+			bm.x = 200;
+			bm.y = 200;
+			bm.w = w;
+			bm.h = h;
+			bm.color = 0xff;
+			bm.data = buff;
+			ret = app_set_stream_sw_osd_bitmap(CAM0_STREAM_MAIN, &bm);
+#endif
+		// os_dbg("ret = %d", ret);
+#endif
+	}  // end of if (ai_result.object_num > 0)
+	else
+	{
+		// os_dbg("not process stream(%d)!!!",  stream_index);
+	}
+
+	count++;
+
+	return OS_SUCCESS;
+}
+
+extern "C" int comm_ai_init()
+{
+	int ret;
+	os_dbg(" enter");
+
+	//. set para
+	app_set_ai_process_para(CAM0_STREAM_MAIN, comm_ai_process, 4, NULL);
+
+	// AI 初始化...
+#ifdef RK_IVA_ENABLE
+	rmm_yuv_handle_init();
+#endif
+
+#ifdef RK_RKNN_YOLO_ENABLE
+	create_rknn_list();
+	init_model();
+#endif
+	//
+	//	start_AlarmProcess();
+	os_dbg(" exit");
+	return OS_SUCCESS;
+}
